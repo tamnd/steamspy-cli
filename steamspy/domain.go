@@ -29,8 +29,8 @@ func (Domain) Info() kit.DomainInfo {
 		Hosts:  []string{Host},
 		Identity: kit.Identity{
 			Binary: "steamspy",
-			Short:  "SteamSpy — Steam game ownership and player stats",
-			Long: `steamspy fetches game details, genre/tag lists, and top-100 charts
+			Short:  "SteamSpy -- Steam game ownership and player stats",
+			Long: `steamspy fetches game details, genre lists, and top-100 charts
 from steamspy.com. No API key required.`,
 			Site: Host,
 			Repo: "https://github.com/tamnd/steamspy-cli",
@@ -51,27 +51,27 @@ func (Domain) Register(app *kit.App) {
 	}, appOp)
 
 	kit.Handle(app, kit.OpMeta{
+		Name:    "top",
+		Group:   "read",
+		List:    true,
+		Summary: "List top 100 games by 2-week players",
+	}, topOp)
+
+	kit.Handle(app, kit.OpMeta{
 		Name:    "genre",
 		Group:   "read",
 		List:    true,
 		Summary: "List games by genre",
-		Args:    []kit.Arg{{Name: "genre", Help: "genre name (e.g. Action)"}},
+		Args:    []kit.Arg{{Name: "genre", Help: "genre name (e.g. Action, RPG, Strategy)"}},
 	}, genreOp)
 
 	kit.Handle(app, kit.OpMeta{
-		Name:    "tag",
+		Name:    "search",
 		Group:   "read",
 		List:    true,
-		Summary: "List games by tag",
-		Args:    []kit.Arg{{Name: "tag", Help: "tag name (e.g. Multiplayer)"}},
-	}, tagOp)
-
-	kit.Handle(app, kit.OpMeta{
-		Name:    "top",
-		Group:   "read",
-		List:    true,
-		Summary: "Show top 100 games",
-	}, topOp)
+		Summary: "Search games by name",
+		Args:    []kit.Arg{{Name: "term", Help: "partial name to search for"}},
+	}, searchOp)
 }
 
 // newClient builds the client from host-resolved config.
@@ -99,74 +99,82 @@ type appInput struct {
 	Client *Client `kit:"inject"`
 }
 
-type genreInput struct {
-	Genre  string  `kit:"arg"          help:"genre name (e.g. Action)"`
-	Page   int     `kit:"flag,inherit" help:"pagination page (default 0)"`
-	Client *Client `kit:"inject"`
-}
-
-type tagInput struct {
-	Tag    string  `kit:"arg"          help:"tag name (e.g. Multiplayer)"`
-	Page   int     `kit:"flag,inherit" help:"pagination page (default 0)"`
-	Client *Client `kit:"inject"`
-}
-
 type topInput struct {
-	Period string  `kit:"flag,inherit" help:"period: 2weeks, forever, owned (default 2weeks)"`
+	Limit  int     `kit:"flag,inherit" help:"maximum number of results (default 20)"`
+	Client *Client `kit:"inject"`
+}
+
+type genreInput struct {
+	Genre  string  `kit:"arg"          help:"genre name (e.g. Action, RPG, Strategy)"`
+	Limit  int     `kit:"flag,inherit" help:"maximum number of results (default 20)"`
+	Client *Client `kit:"inject"`
+}
+
+type searchInput struct {
+	Term   string  `kit:"arg"          help:"partial name to search for"`
+	Limit  int     `kit:"flag,inherit" help:"maximum number of results (default 10)"`
 	Client *Client `kit:"inject"`
 }
 
 // --- handlers ---
 
-func appOp(ctx context.Context, in appInput, emit func(Game) error) error {
+func appOp(ctx context.Context, in appInput, emit func(App) error) error {
 	id, err := strconv.Atoi(in.AppID)
 	if err != nil {
 		return errs.Usage("appid must be an integer: %v", err)
 	}
-	g, err := in.Client.App(ctx, id)
+	a, err := in.Client.App(ctx, id)
 	if err != nil {
 		return mapErr(err)
 	}
-	return emit(*g)
+	return emit(*a)
 }
 
-func genreOp(ctx context.Context, in genreInput, emit func(Game) error) error {
-	games, err := in.Client.Genre(ctx, in.Genre, in.Page)
+func topOp(ctx context.Context, in topInput, emit func(App) error) error {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	apps, err := in.Client.Top(ctx, limit)
 	if err != nil {
 		return mapErr(err)
 	}
-	for _, g := range games {
-		if err := emit(g); err != nil {
+	for _, a := range apps {
+		if err := emit(a); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func tagOp(ctx context.Context, in tagInput, emit func(Game) error) error {
-	games, err := in.Client.Tag(ctx, in.Tag, in.Page)
+func genreOp(ctx context.Context, in genreInput, emit func(App) error) error {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	apps, err := in.Client.Genre(ctx, in.Genre, limit)
 	if err != nil {
 		return mapErr(err)
 	}
-	for _, g := range games {
-		if err := emit(g); err != nil {
+	for _, a := range apps {
+		if err := emit(a); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func topOp(ctx context.Context, in topInput, emit func(Game) error) error {
-	period := in.Period
-	if period == "" {
-		period = "2weeks"
+func searchOp(ctx context.Context, in searchInput, emit func(App) error) error {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 10
 	}
-	games, err := in.Client.Top(ctx, period)
+	apps, err := in.Client.Search(ctx, in.Term, limit)
 	if err != nil {
 		return mapErr(err)
 	}
-	for _, g := range games {
-		if err := emit(g); err != nil {
+	for _, a := range apps {
+		if err := emit(a); err != nil {
 			return err
 		}
 	}
@@ -180,7 +188,7 @@ func (Domain) Classify(input string) (uriType, id string, err error) {
 	if input == "" {
 		return "", "", errs.Usage("empty steamspy reference")
 	}
-	// Numeric input → app ID
+	// Numeric input -> app ID
 	if _, err := strconv.Atoi(input); err == nil {
 		return "app", input, nil
 	}

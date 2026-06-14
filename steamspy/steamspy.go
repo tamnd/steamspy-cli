@@ -33,9 +33,9 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		BaseURL:   "https://steamspy.com/api.php",
-		UserAgent: "steamspy-cli/0.1.0 (github.com/tamnd/steamspy-cli)",
-		Rate:      200 * time.Millisecond,
+		BaseURL:   "https://steamspy.com",
+		UserAgent: "steamspy-cli/0.1 (tamnd87@gmail.com)",
+		Rate:      1 * time.Second,
 		Timeout:   30 * time.Second,
 		Retries:   3,
 	}
@@ -58,73 +58,66 @@ func NewClient(cfg Config) *Client {
 }
 
 // App fetches game details for a given Steam app ID.
-func (c *Client) App(ctx context.Context, appID int) (*Game, error) {
-	u := fmt.Sprintf("%s?request=appdetails&appid=%d", c.cfg.BaseURL, appID)
+func (c *Client) App(ctx context.Context, appID int) (*App, error) {
+	u := fmt.Sprintf("%s/api.php?request=appdetails&appid=%d", c.cfg.BaseURL, appID)
 	body, err := c.get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	var g Game
-	if err := json.Unmarshal(body, &g); err != nil {
+	var w wireApp
+	if err := json.Unmarshal(body, &w); err != nil {
 		return nil, fmt.Errorf("decode app details: %w", err)
 	}
-	return &g, nil
+	a := toApp(w)
+	return &a, nil
 }
 
-// Genre fetches games in the given genre (paginated, page starts at 0).
-func (c *Client) Genre(ctx context.Context, genre string, page int) ([]Game, error) {
-	u := fmt.Sprintf("%s?request=genre&genre=%s&page=%d", c.cfg.BaseURL, url.QueryEscape(genre), page)
-	return c.fetchGameMap(ctx, u)
+// Top fetches the top 100 games by 2-week players, sorted by Positive desc, limited to limit.
+func (c *Client) Top(ctx context.Context, limit int) ([]App, error) {
+	u := fmt.Sprintf("%s/api.php?request=top100in2weeks", c.cfg.BaseURL)
+	return c.fetchGameMap(ctx, u, limit)
 }
 
-// Tag fetches games with the given tag (paginated, page starts at 0).
-func (c *Client) Tag(ctx context.Context, tag string, page int) ([]Game, error) {
-	u := fmt.Sprintf("%s?request=tag&tag=%s&page=%d", c.cfg.BaseURL, url.QueryEscape(tag), page)
-	return c.fetchGameMap(ctx, u)
+// Genre fetches games in the given genre, sorted by Positive desc, limited to limit.
+func (c *Client) Genre(ctx context.Context, genre string, limit int) ([]App, error) {
+	u := fmt.Sprintf("%s/api.php?request=genre&genre=%s", c.cfg.BaseURL, url.QueryEscape(genre))
+	return c.fetchGameMap(ctx, u, limit)
 }
 
-// Top fetches the top 100 games. period must be "2weeks", "forever", or "owned".
-func (c *Client) Top(ctx context.Context, period string) ([]Game, error) {
-	req, err := topRequest(period)
-	if err != nil {
-		return nil, err
-	}
-	u := fmt.Sprintf("%s?request=%s", c.cfg.BaseURL, req)
-	return c.fetchGameMap(ctx, u)
+// Search searches games by name term, limited to limit results.
+func (c *Client) Search(ctx context.Context, term string, limit int) ([]App, error) {
+	u := fmt.Sprintf("%s/api.php?request=search&term=%s", c.cfg.BaseURL, url.QueryEscape(term))
+	return c.fetchGameMap(ctx, u, limit)
 }
 
-// topRequest maps the user-facing period name to the API request parameter.
-func topRequest(period string) (string, error) {
-	switch period {
-	case "2weeks", "":
-		return "top100in2weeks", nil
-	case "forever":
-		return "top100forever", nil
-	case "owned":
-		return "top100owned", nil
-	default:
-		return "", fmt.Errorf("unknown period %q: must be 2weeks, forever, or owned", period)
-	}
-}
-
-// fetchGameMap decodes a map[string]Game response and returns games sorted by AppID.
-func (c *Client) fetchGameMap(ctx context.Context, u string) ([]Game, error) {
+// fetchGameMap decodes a map[string]wireApp response, converts to App, sorts by Positive desc, and applies limit.
+func (c *Client) fetchGameMap(ctx context.Context, u string, limit int) ([]App, error) {
 	body, err := c.get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	var raw map[string]Game
+	// Some endpoints (notably search) may return an empty body when there are no results.
+	if len(body) == 0 {
+		return nil, nil
+	}
+	var raw map[string]wireApp
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("decode game map: %w", err)
 	}
-	games := make([]Game, 0, len(raw))
-	for _, g := range raw {
-		games = append(games, g)
+	apps := make([]App, 0, len(raw))
+	for _, w := range raw {
+		apps = append(apps, toApp(w))
 	}
-	sort.Slice(games, func(i, j int) bool {
-		return games[i].AppID < games[j].AppID
+	sort.Slice(apps, func(i, j int) bool {
+		if apps[i].Positive != apps[j].Positive {
+			return apps[i].Positive > apps[j].Positive
+		}
+		return apps[i].AppID < apps[j].AppID
 	})
-	return games, nil
+	if limit > 0 && len(apps) > limit {
+		apps = apps[:limit]
+	}
+	return apps, nil
 }
 
 func (c *Client) get(ctx context.Context, rawURL string) ([]byte, error) {
@@ -190,5 +183,9 @@ func (c *Client) pace() {
 }
 
 func backoff(attempt int) time.Duration {
-	return min(time.Duration(attempt)*500*time.Millisecond, 5*time.Second)
+	d := time.Duration(attempt) * 500 * time.Millisecond
+	if d > 5*time.Second {
+		return 5 * time.Second
+	}
+	return d
 }
