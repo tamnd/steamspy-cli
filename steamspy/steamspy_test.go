@@ -24,7 +24,9 @@ const fakeAppJSON = `{
   "average_2weeks": 234,
   "price": "0",
   "ccu": 987654,
-  "languages": "English, French"
+  "languages": "English, French",
+  "genre": "Action,Free to Play",
+  "tags": {"Free to Play": 80000, "MOBA": 70000, "Strategy": 60000, "Multiplayer": 50000, "Co-op": 40000, "PvP": 30000}
 }`
 
 const fakeGameMapJSON = `{
@@ -39,7 +41,9 @@ const fakeGameMapJSON = `{
     "average_forever": 5000,
     "average_2weeks": 300,
     "price": "0",
-    "ccu": 500000
+    "ccu": 500000,
+    "genre": "Action,Free to Play",
+    "tags": {"FPS": 90000, "Shooter": 80000}
   },
   "570": {
     "appid": 570,
@@ -52,7 +56,9 @@ const fakeGameMapJSON = `{
     "average_forever": 11234,
     "average_2weeks": 234,
     "price": "0",
-    "ccu": 987654
+    "ccu": 987654,
+    "genre": "Action,Free to Play",
+    "tags": {"MOBA": 70000, "Free to Play": 80000}
   }
 }`
 
@@ -88,27 +94,34 @@ func TestAppParsesGame(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	g, err := c.App(context.Background(), 570)
+	a, err := c.App(context.Background(), 570)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g.AppID != 570 {
-		t.Errorf("AppID = %d, want 570", g.AppID)
+	if a.AppID != 570 {
+		t.Errorf("AppID = %d, want 570", a.AppID)
 	}
-	if g.Name != "Dota 2" {
-		t.Errorf("Name = %q, want Dota 2", g.Name)
+	if a.Name != "Dota 2" {
+		t.Errorf("Name = %q, want Dota 2", a.Name)
 	}
-	if g.Developer != "Valve" {
-		t.Errorf("Developer = %q, want Valve", g.Developer)
+	if a.Developer != "Valve" {
+		t.Errorf("Developer = %q, want Valve", a.Developer)
 	}
-	if g.Positive != 1234567 {
-		t.Errorf("Positive = %d, want 1234567", g.Positive)
+	if a.Positive != 1234567 {
+		t.Errorf("Positive = %d, want 1234567", a.Positive)
 	}
-	if g.Owners != "100,000,000 .. 200,000,000" {
-		t.Errorf("Owners = %q", g.Owners)
+	if a.Owners != "100,000,000 .. 200,000,000" {
+		t.Errorf("Owners = %q", a.Owners)
 	}
-	if g.Price != "0" {
-		t.Errorf("Price = %q, want 0", g.Price)
+	if a.Price != "Free" {
+		t.Errorf("Price = %q, want Free", a.Price)
+	}
+	// average_forever=11234 minutes / 60 = 187.2333... -> "187.2"
+	if a.AvgHours != "187.2" {
+		t.Errorf("AvgHours = %q, want 187.2", a.AvgHours)
+	}
+	if a.TopTags == "" {
+		t.Error("TopTags should not be empty")
 	}
 }
 
@@ -139,30 +152,89 @@ func TestAppRetriesOn503(t *testing.T) {
 	}
 }
 
+func TestTopSortsAndLimits(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RawQuery, "top100in2weeks") {
+			t.Errorf("query %q does not contain top100in2weeks", r.URL.RawQuery)
+		}
+		_, _ = fmt.Fprint(w, fakeGameMapJSON)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	apps, err := c.Top(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// limit=1, should get only the highest Positive (570 with 1234567)
+	if len(apps) != 1 {
+		t.Fatalf("len = %d, want 1", len(apps))
+	}
+	if apps[0].AppID != 570 {
+		t.Errorf("top game AppID = %d, want 570 (highest positive)", apps[0].AppID)
+	}
+}
+
+func TestTopDefaultLimit(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, fakeGameMapJSON)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	// limit=0 means no limit (returns all)
+	apps, err := c.Top(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(apps) != 2 {
+		t.Fatalf("len = %d, want 2", len(apps))
+	}
+}
+
 func TestGenreParsesGames(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.RawQuery, "genre=Action") {
+			t.Errorf("query %q does not contain genre=Action", r.URL.RawQuery)
+		}
 		_, _ = fmt.Fprint(w, fakeGameMapJSON)
 	}))
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	games, err := c.Genre(context.Background(), "Action", 0)
+	apps, err := c.Genre(context.Background(), "Action", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(games) != 2 {
-		t.Fatalf("len(games) = %d, want 2", len(games))
+	if len(apps) != 2 {
+		t.Fatalf("len(apps) = %d, want 2", len(apps))
 	}
-	// sorted by AppID ascending: 570 then 730
-	if games[0].AppID != 570 {
-		t.Errorf("games[0].AppID = %d, want 570", games[0].AppID)
+	// sorted by Positive desc: 570 first (1234567) then 730 (500000)
+	if apps[0].AppID != 570 {
+		t.Errorf("apps[0].AppID = %d, want 570", apps[0].AppID)
 	}
-	if games[1].AppID != 730 {
-		t.Errorf("games[1].AppID = %d, want 730", games[1].AppID)
+	if apps[1].AppID != 730 {
+		t.Errorf("apps[1].AppID = %d, want 730", apps[1].AppID)
 	}
 }
 
-func TestGenrePageParam(t *testing.T) {
+func TestGenreLimit(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, fakeGameMapJSON)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	apps, err := c.Genre(context.Background(), "Action", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(apps) != 1 {
+		t.Fatalf("len = %d, want 1 (limit applied)", len(apps))
+	}
+}
+
+func TestSearchSendsTermParam(t *testing.T) {
 	var gotQuery string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
@@ -171,84 +243,64 @@ func TestGenrePageParam(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	_, err := c.Genre(context.Background(), "Action", 1)
+	_, err := c.Search(context.Background(), "portal", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(gotQuery, "page=1") {
-		t.Errorf("query %q does not contain page=1", gotQuery)
+	if !strings.Contains(gotQuery, "request=search") {
+		t.Errorf("query %q does not contain request=search", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "term=portal") {
+		t.Errorf("query %q does not contain term=portal", gotQuery)
 	}
 }
 
-func TestTagParsesGames(t *testing.T) {
+func TestSearchLimit(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, fakeGameMapJSON)
 	}))
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	games, err := c.Tag(context.Background(), "Multiplayer", 0)
+	apps, err := c.Search(context.Background(), "valve", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(games) != 2 {
-		t.Fatalf("len(games) = %d, want 2", len(games))
+	if len(apps) != 1 {
+		t.Fatalf("len = %d, want 1 (limit applied)", len(apps))
 	}
 }
 
-func TestTopParsesGames2Weeks(t *testing.T) {
-	var gotQuery string
+func TestAppPaidPrice(t *testing.T) {
+	const paidJSON = `{
+		"appid": 292030,
+		"name": "The Witcher 3: Wild Hunt",
+		"developer": "CD PROJEKT RED",
+		"publisher": "CD PROJEKT RED",
+		"positive": 600000,
+		"negative": 10000,
+		"owners": "20,000,000 .. 50,000,000",
+		"average_forever": 3000,
+		"average_2weeks": 0,
+		"price": "3999",
+		"genre": "RPG",
+		"tags": {"RPG": 50000}
+	}`
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		_, _ = fmt.Fprint(w, fakeGameMapJSON)
+		_, _ = fmt.Fprint(w, paidJSON)
 	}))
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	games, err := c.Top(context.Background(), "2weeks")
+	a, err := c.App(context.Background(), 292030)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(games) != 2 {
-		t.Fatalf("len(games) = %d, want 2", len(games))
+	if a.Price != "$39.99" {
+		t.Errorf("Price = %q, want $39.99", a.Price)
 	}
-	if !strings.Contains(gotQuery, "top100in2weeks") {
-		t.Errorf("query %q does not contain top100in2weeks", gotQuery)
-	}
-}
-
-func TestTopParsesGamesForever(t *testing.T) {
-	var gotQuery string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		_, _ = fmt.Fprint(w, fakeGameMapJSON)
-	}))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	_, err := c.Top(context.Background(), "forever")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(gotQuery, "top100forever") {
-		t.Errorf("query %q does not contain top100forever", gotQuery)
-	}
-}
-
-func TestTopParsesGamesOwned(t *testing.T) {
-	var gotQuery string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		_, _ = fmt.Fprint(w, fakeGameMapJSON)
-	}))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	_, err := c.Top(context.Background(), "owned")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(gotQuery, "top100owned") {
-		t.Errorf("query %q does not contain top100owned", gotQuery)
+	// 3000 / 60 = 50.0
+	if a.AvgHours != "50.0" {
+		t.Errorf("AvgHours = %q, want 50.0", a.AvgHours)
 	}
 }
