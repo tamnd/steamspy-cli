@@ -1,0 +1,10 @@
+title       = "steamspy"
+baseURL     = "https://steamspy-cli.tamnd.com/"
+description = "SteamSpy — Steam game ownership and player stats"
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/steamspy-cli"
